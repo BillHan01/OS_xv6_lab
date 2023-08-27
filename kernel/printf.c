@@ -109,7 +109,6 @@ printf(char *fmt, ...)
       break;
     }
   }
-  va_end(ap);
 
   if(locking)
     release(&pr.lock);
@@ -122,6 +121,7 @@ panic(char *s)
   printf("panic: ");
   printf(s);
   printf("\n");
+  backtrace();
   panicked = 1; // freeze uart output from other CPUs
   for(;;)
     ;
@@ -132,4 +132,22 @@ printfinit(void)
 {
   initlock(&pr.lock, "pr");
   pr.locking = 1;
+}
+
+void
+backtrace(void)
+{
+  // read the current frame pointer
+  uint64 fp = r_fp();
+  // the top of the stack frame is located at high address
+  printf("backtrace:\n");
+
+  while(fp) {
+    uint64 ret_addr = *(uint64 *)(fp - 8); // Return address is at fp-8
+    printf("%p\n", ret_addr);
+    fp = *(uint64 *)(fp - 16); // Next frame pointer is at fp-16
+    // Terminate loop if out of the stack page
+    if(fp < PGROUNDDOWN(fp) || fp >= PGROUNDUP(fp))
+      break;
+  }
 }
