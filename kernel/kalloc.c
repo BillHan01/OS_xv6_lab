@@ -23,6 +23,17 @@ struct {
   struct run *freelist;
 } kmem;
 
+uint64 
+get_free_mem() {
+  uint64 count = 0;
+  struct run *r = kmem.freelist;
+  while(r){
+    count++;
+    r = r->next;
+  }
+  return count * PGSIZE;
+}
+
 void
 kinit()
 {
@@ -39,7 +50,7 @@ freerange(void *pa_start, void *pa_end)
     kfree(p);
 }
 
-// Free the page of physical memory pointed at by pa,
+// Free the page of physical memory pointed at by v,
 // which normally should have been returned by a
 // call to kalloc().  (The exception is when
 // initializing the allocator; see kinit above.)
