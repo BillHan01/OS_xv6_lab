@@ -5,6 +5,9 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -53,27 +56,62 @@ usertrap(void)
   if(r_scause() == 8){
     // system call
 
-    if(killed(p))
+    if(p->killed)
       exit(-1);
 
     // sepc points to the ecall instruction,
     // but we want to return to the next instruction.
     p->trapframe->epc += 4;
 
-    // an interrupt will change sepc, scause, and sstatus,
-    // so enable only now that we're done with those registers.
+    // an interrupt will change sstatus &c registers,
+    // so don't enable until done with those registers.
     intr_on();
 
     syscall();
+  } else if(r_scause() == 13 || r_scause() == 15) {
+      uint64 va = r_stval();
+      struct vma *pvma;
+      int i = 0;
+      //p->sz point to the top of heap(i.e. bottom of trapframe)
+      //p->trapframe->sp point to the top of stack
+      if((va >= p->sz) || (va < PGROUNDDOWN(p->trapframe->sp))){
+        p->killed = 1;
+      } else {
+        va = PGROUNDDOWN(va);
+        for(; i < MAXVMA; i++){
+          pvma = &p->vma_table[i];
+          if(pvma->mapped && (va >= pvma->addr) && (va < (pvma->addr + pvma->len))){
+            char *mem;
+            mem = kalloc();
+              if(mem == 0){
+                p->killed = 1;
+                break;
+              }
+              memset(mem, 0, PGSIZE);
+              if(mappages(p->pagetable, va, PGSIZE, (uint64)mem, (pvma->prot << 1) | PTE_U) != 0){
+                kfree(mem);
+                p->killed = 1;
+                break;
+              }
+              break;
+            }
+          }
+        }
+
+      if(p->killed != 1 && i <= MAXVMA){
+        ilock(pvma->f->ip);
+        readi(pvma->f->ip, 1, va, va - pvma->addr, PGSIZE);
+        iunlock(pvma->f->ip);
+      }
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
-    setkilled(p);
+    p->killed = 1;
   }
 
-  if(killed(p))
+  if(p->killed)
     exit(-1);
 
   // give up the CPU if this is a timer interrupt.
@@ -96,12 +134,11 @@ usertrapret(void)
   // we're back in user space, where usertrap() is correct.
   intr_off();
 
-  // send syscalls, interrupts, and exceptions to uservec in trampoline.S
-  uint64 trampoline_uservec = TRAMPOLINE + (uservec - trampoline);
-  w_stvec(trampoline_uservec);
+  // send syscalls, interrupts, and exceptions to trampoline.S
+  w_stvec(TRAMPOLINE + (uservec - trampoline));
 
   // set up trapframe values that uservec will need when
-  // the process next traps into the kernel.
+  // the process next re-enters the kernel.
   p->trapframe->kernel_satp = r_satp();         // kernel page table
   p->trapframe->kernel_sp = p->kstack + PGSIZE; // process's kernel stack
   p->trapframe->kernel_trap = (uint64)usertrap;
@@ -122,11 +159,11 @@ usertrapret(void)
   // tell trampoline.S the user page table to switch to.
   uint64 satp = MAKE_SATP(p->pagetable);
 
-  // jump to userret in trampoline.S at the top of memory, which 
+  // jump to trampoline.S at the top of memory, which 
   // switches to the user page table, restores user registers,
   // and switches to user mode with sret.
-  uint64 trampoline_userret = TRAMPOLINE + (userret - trampoline);
-  ((void (*)(uint64))trampoline_userret)(satp);
+  uint64 fn = TRAMPOLINE + (userret - trampoline);
+  ((void (*)(uint64,uint64))fn)(TRAPFRAME, satp);
 }
 
 // interrupts and exceptions from kernel code go here via kernelvec,
