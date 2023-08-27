@@ -23,3 +23,5 @@ int main(int argc, char *argv[])
     sleep(ticks_num);
     exit(0);
 }
+
+
